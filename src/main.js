@@ -114,9 +114,10 @@ async function init() {
 
     document.querySelector('#app').appendChild(app.canvas)
 
-    // Load textures
-    const colorTex = await PIXI.Assets.load('/image-color.jpg')
-    const bwTex = await PIXI.Assets.load('/image-bw.jpg')
+    // Load textures with base URL for GitHub Pages compatibility
+    const baseUrl = import.meta.env.BASE_URL
+    const colorTex = await PIXI.Assets.load(`${baseUrl}image-color.jpg`)
+    const bwTex = await PIXI.Assets.load(`${baseUrl}image-bw.jpg`)
 
     // Create the sprite
     const sprite = new PIXI.Sprite(colorTex)
