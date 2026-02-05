@@ -1,0 +1,19 @@
+{
+  "name": "maskking",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "canvas": "^3.2.1",
+    "vite": "^7.2.4"
+  },
+  "dependencies": {
+    "pixi.js": "^8.16.0",
+    "tweakpane": "^4.0.5"
+  }
+}
