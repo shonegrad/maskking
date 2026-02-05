@@ -2,6 +2,9 @@ import './style.css'
 import * as PIXI from 'pixi.js'
 import { Pane } from 'tweakpane'
 
+// Unsplash API key from environment
+const UNSPLASH_KEY = import.meta.env.VITE_UNSPLASH_ACCESS_KEY
+
 const state = {
   threshold: 0.0,
   feather: 0.06,
@@ -14,6 +17,55 @@ const state = {
 }
 
 const app = new PIXI.Application()
+
+// Helper: Set or hide credit attribution
+function setCredit({ text, url } = {}) {
+  const credit = document.querySelector('#credit')
+  if (!credit) return
+  if (!text || !url) {
+    credit.hidden = true
+    credit.innerHTML = ''
+    return
+  }
+  credit.hidden = false
+  credit.innerHTML = `Photo: <a href="${url}" target="_blank" rel="noopener noreferrer">${text}</a>`
+}
+
+// Helper: Load texture from URL (handles async loading)
+async function loadTextureFromUrl(url) {
+  return await PIXI.Assets.load(url)
+}
+
+// Helper: Fetch random photo from Unsplash API
+async function fetchRandomUnsplash({ query = 'nature', orientation = 'landscape' } = {}) {
+  if (!UNSPLASH_KEY) {
+    throw new Error('Missing VITE_UNSPLASH_ACCESS_KEY in .env.local')
+  }
+
+  const endpoint = new URL('https://api.unsplash.com/photos/random')
+  endpoint.searchParams.set('orientation', orientation)
+  endpoint.searchParams.set('query', query)
+
+  const res = await fetch(endpoint.toString(), {
+    headers: {
+      Authorization: `Client-ID ${UNSPLASH_KEY}`,
+      'Accept-Version': 'v1',
+    },
+  })
+
+  if (!res.ok) {
+    const msg = await res.text().catch(() => '')
+    throw new Error(`Unsplash error ${res.status}: ${msg || res.statusText}`)
+  }
+
+  const data = await res.json()
+
+  const imageUrl = data?.urls?.regular || data?.urls?.full
+  const photographer = data?.user?.name || 'Unsplash photographer'
+  const creditUrl = data?.links?.html || 'https://unsplash.com'
+
+  return { imageUrl, photographer, creditUrl }
+}
 
 // Standard PixiJS v8 vertex shader
 const vertex = `
@@ -44,12 +96,11 @@ const vertex = `
   }
 `;
 
-// Fragment shader using PixiJS v8 compatible syntax (texture2D + gl_FragColor)
+// Fragment shader - single image mode (generates B/W from color internally)
 const fragment = `
   in vec2 vTextureCoord;
 
   uniform sampler2D uTexture;
-  uniform sampler2D uBW;
 
   uniform float uThreshold;
   uniform float uFeather;
@@ -83,11 +134,14 @@ const fragment = `
 
   void main() {
     vec4 c = texture2D(uTexture, vTextureCoord);
-    vec4 bw = texture2D(uBW, vTextureCoord);
 
+    // Generate grayscale from the same image
     float luma = dot(c.rgb, vec3(0.299, 0.587, 0.114));
+    vec3 bw = vec3(luma);
+
+    float maskLuma = luma;
     if (uInvert > 0.5) {
-      luma = 1.0 - luma;
+      maskLuma = 1.0 - maskLuma;
     }
 
     float n = 0.0;
@@ -96,13 +150,18 @@ const fragment = `
       n = (noise(p) - 0.5) * 2.0;
     }
 
-    float v = luma + n * uNoiseStrength;
+    float v = maskLuma + n * uNoiseStrength;
     float mask = smoothstep(uThreshold - uFeather, uThreshold + uFeather, v);
 
-    vec3 outRgb = mix(bw.rgb, c.rgb, mask);
+    vec3 outRgb = mix(bw, c.rgb, mask);
     gl_FragColor = vec4(outRgb, 1.0);
   }
 `;
+
+// Store references for dynamic texture swapping
+let currentSprite = null
+let currentFilter = null
+let currentTexture = null
 
 async function init() {
   try {
@@ -114,18 +173,17 @@ async function init() {
 
     document.querySelector('#app').appendChild(app.canvas)
 
-    // Load textures with base URL for GitHub Pages compatibility
+    // Load initial texture
     const baseUrl = import.meta.env.BASE_URL
-    const colorTex = await PIXI.Assets.load(`${baseUrl}image-color.jpg`)
-    const bwTex = await PIXI.Assets.load(`${baseUrl}image-bw.jpg`)
+    currentTexture = await PIXI.Assets.load(`${baseUrl}image-color.jpg`)
 
     // Create the sprite
-    const sprite = new PIXI.Sprite(colorTex)
-    sprite.anchor.set(0.5)
-    app.stage.addChild(sprite)
+    currentSprite = new PIXI.Sprite(currentTexture)
+    currentSprite.anchor.set(0.5)
+    app.stage.addChild(currentSprite)
 
-    // Create filter using official PixiJS v8 pattern
-    const filter = new PIXI.Filter({
+    // Create filter
+    currentFilter = new PIXI.Filter({
       glProgram: new PIXI.GlProgram({
         fragment,
         vertex,
@@ -139,29 +197,28 @@ async function init() {
           uNoiseScale: { value: state.noiseScale, type: 'f32' },
           uInvert: { value: 0.0, type: 'f32' },
         },
-        uBW: bwTex.source,
       },
     })
 
-    sprite.filters = [filter]
+    currentSprite.filters = [currentFilter]
 
     function resize() {
       const w = app.renderer.width
       const h = app.renderer.height
 
-      sprite.position.set(w / 2, h / 2)
+      currentSprite.position.set(w / 2, h / 2)
 
-      const texW = colorTex.width
-      const texH = colorTex.height
+      const texW = currentTexture.width
+      const texH = currentTexture.height
       const scale = Math.max(w / texW, h / texH)
-      sprite.scale.set(scale)
+      currentSprite.scale.set(scale)
     }
 
     window.addEventListener('resize', resize)
     resize()
 
-    // UI
-    const pane = new Pane({ title: 'Threshold Mask Lab' })
+    // Tweakpane UI
+    const pane = new Pane({ title: 'MaskKing' })
     pane.addBinding(state, 'threshold', { min: 0, max: 1, step: 0.001 })
     pane.addBinding(state, 'feather', { min: 0, max: 0.2, step: 0.001 })
     pane.addBinding(state, 'speed', { min: 0, max: 1.5, step: 0.01 })
@@ -181,6 +238,69 @@ async function init() {
       pane.refresh()
     })
 
+    // Wire up Upload button
+    const btnUpload = document.querySelector('#btnUpload')
+    const btnUnsplash = document.querySelector('#btnUnsplash')
+    const fileInput = document.querySelector('#file')
+
+    if (btnUpload && fileInput) {
+      btnUpload.addEventListener('click', () => fileInput.click())
+    }
+
+    if (fileInput) {
+      fileInput.addEventListener('change', async (e) => {
+        const file = e.target.files?.[0]
+        if (!file) return
+
+        const url = URL.createObjectURL(file)
+
+        try {
+          const tex = await loadTextureFromUrl(url)
+          currentTexture = tex
+          currentSprite.texture = tex
+
+          setCredit() // hide credit for local upload
+          resize()
+        } finally {
+          setTimeout(() => URL.revokeObjectURL(url), 5000)
+        }
+      })
+    }
+
+    // Wire up Unsplash button
+    if (btnUnsplash) {
+      btnUnsplash.addEventListener('click', async () => {
+        btnUnsplash.disabled = true
+        const oldText = btnUnsplash.textContent
+        btnUnsplash.textContent = 'Loading…'
+
+        try {
+          // Random query from climate-related topics
+          const queries = ['climate change', 'wildfire', 'flood', 'drought', 'melting ice', 'heatwave', 'storm', 'nature']
+          const query = queries[Math.floor(Math.random() * queries.length)]
+
+          const { imageUrl, photographer, creditUrl } = await fetchRandomUnsplash({
+            query,
+            orientation: 'landscape',
+          })
+
+          const tex = await loadTextureFromUrl(imageUrl)
+          currentTexture = tex
+          currentSprite.texture = tex
+
+          setCredit({ text: photographer, url: creditUrl })
+          resize()
+        } catch (err) {
+          console.error(err)
+          setCredit()
+          alert(err?.message || 'Failed to load Unsplash image')
+        } finally {
+          btnUnsplash.disabled = false
+          btnUnsplash.textContent = oldText
+        }
+      })
+    }
+
     // Animation loop
     app.ticker.add((ticker) => {
       const dt = ticker.deltaMS / 1000
@@ -196,7 +316,7 @@ async function init() {
       }
 
       // Update uniforms
-      const u = filter.resources.thresholdUniforms.uniforms
+      const u = currentFilter.resources.thresholdUniforms.uniforms
       u.uThreshold = state.threshold
       u.uFeather = state.feather
       u.uTime = state.time
@@ -205,7 +325,7 @@ async function init() {
       u.uInvert = state.direction === 'bright-to-dark' ? 1.0 : 0.0
     })
 
-    console.log('Threshold Mask Lab initialized successfully')
+    console.log('MaskKing initialized successfully')
   } catch (error) {
     console.error('Init error:', error)
   }
